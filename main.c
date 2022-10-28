@@ -4,13 +4,6 @@
 
     Please find the license in the provided COPYING file.
 */
-#define TS_VERSION_FALLBACK "1.3.1"
-
-/* from https://github.com/LLNL/lbann/issues/117
- * and https://gcc.gnu.org/onlinedocs/cpp/Stringizing.html#Stringizing */
-#define TS_MAKE_STR(x) _TS_MAKE_STR(x)
-#define _TS_MAKE_STR(x) #x
-
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,7 +13,9 @@
 #include <sys/time.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include <time.h>
 
+#include "version.h"
 #include "main.h"
 
 extern char *optarg;
@@ -37,14 +32,11 @@ static char *old_getopt_env;
 static char version[1024];
 
 static void init_version() {
-#ifdef TS_VERSION
     char *ts_version = TS_MAKE_STR(TS_VERSION);
+    time_t t = time(NULL);
+    struct tm timeinfo = *localtime(&t);
     sprintf(version, "Task Spooler %s - a task queue system for the unix user.\n"
-                     "Copyright (C) 2007-2020  Duc Nguyen - Lluis Batlle i Rossell", ts_version);
-#else
-    sprintf(version, "Task Spooler %s - a task queue system for the unix user.\n"
-                     "Copyright (C) 2007-2020  Duc Nguyen - Lluis Batlle i Rossell", TS_VERSION_FALLBACK);
-#endif
+                     "Copyright (C) 2007-%d  Duc Nguyen - Lluis Batlle i Rossell", ts_version, timeinfo.tm_year + 1900);
 }
 
 static void default_command_line() {
@@ -66,6 +58,7 @@ static void default_command_line() {
     command_line.gpu_nums = NULL;
     command_line.wait_free_gpus = 1;
     command_line.logfile = NULL;
+    command_line.list_format = DEFAULT;
 }
 
 struct Msg default_msg() {
@@ -122,18 +115,20 @@ static struct option longOptions[] = {
         {"get_label",         optional_argument, NULL, 'a'},
         {"count_running",     no_argument,       NULL, 'R'},
         {"last_queue_id",     no_argument,       NULL, 'q'},
-        {"gpus",              required_argument, NULL, 'G'},
-        {"gpu_indices",       required_argument, NULL, 'g'},
         {"full_cmd",          optional_argument, NULL, 'F'},
         {"getenv",            required_argument, NULL, 0},
         {"setenv",            required_argument, NULL, 0},
         {"unsetenv",          required_argument, NULL, 0},
-        {"set_gpu_free_perc", required_argument, NULL, 0},
-        {"get_gpu_free_perc", no_argument,       NULL, 0},
         {"get_logdir",        no_argument,       NULL, 0},
         {"set_logdir",        required_argument, NULL, 0},
+#ifndef CPU
+        {"gpus",              required_argument, NULL, 'G'},
+        {"gpu_indices",       required_argument, NULL, 'g'},
+        {"set_gpu_free_perc", required_argument, NULL, 0},
+        {"get_gpu_free_perc", no_argument,       NULL, 0},
         {"set_gpu_wait",      required_argument, NULL, 0},
         {"get_gpu_wait",      no_argument,       NULL, 0},
+#endif
         {NULL, 0,                            NULL, 0}
 };
 
@@ -144,8 +139,13 @@ void parse_opts(int argc, char **argv) {
 
     /* Parse options */
     while (1) {
-        c = getopt_long(argc, argv, ":RTVhKzClnfmBEr:a:F:t:c:o:p:w:k:u:s:U:qi:N:L:dS:D:G:W:g:O:",
+#ifndef CPU
+        c = getopt_long(argc, argv, ":RTVhKzClnfmBEr:a:F:t:c:o:p:w:k:u:s:U:qi:N:L:dS:D:G:W:g:O:M:",
                         longOptions, &optionIdx);
+#else
+        c = getopt_long(argc, argv, ":RTVhKzClnfmBEr:a:F:t:c:o:p:w:k:u:s:U:qi:N:L:dS:D:W:O:M:",
+                        longOptions, &optionIdx);
+#endif
 
         if (c == -1)
             break;
@@ -161,16 +161,17 @@ void parse_opts(int argc, char **argv) {
                 } else if (strcmp(longOptions[optionIdx].name, "unsetenv") == 0) {
                     command_line.request = c_UNSET_ENV;
                     command_line.label = optarg;  /* reuse this var */
-                } else if (strcmp(longOptions[optionIdx].name, "set_gpu_free_perc") == 0) {
-                    command_line.request = c_SET_FREE_PERC;
-                    command_line.gpus = atoi(optarg); /* reuse this var */
-                } else if (strcmp(longOptions[optionIdx].name, "get_gpu_free_perc") == 0) {
-                    command_line.request = c_GET_FREE_PERC;
                 } else if (strcmp(longOptions[optionIdx].name, "get_logdir") == 0) {
                     command_line.request = c_GET_LOGDIR;
                 } else if (strcmp(longOptions[optionIdx].name, "set_logdir") == 0) {
                     command_line.request = c_SET_LOGDIR;
                     command_line.label = optarg; /* reuse this variable */
+#ifndef CPU
+                } else if (strcmp(longOptions[optionIdx].name, "set_gpu_free_perc") == 0) {
+                    command_line.request = c_SET_FREE_PERC;
+                    command_line.gpus = atoi(optarg); /* reuse this var */
+                } else if (strcmp(longOptions[optionIdx].name, "get_gpu_free_perc") == 0) {
+                    command_line.request = c_GET_FREE_PERC;
                 } else if (strcmp(longOptions[optionIdx].name, "set_gpu_wait") == 0) {
                     printf("Due to some internal changes, this option has no functionality "
                            "and will be removed in the next release!\n");
@@ -179,6 +180,7 @@ void parse_opts(int argc, char **argv) {
                     printf("Due to some internal changes, this option has no functionality "
                            "and will be removed in the next release!\n");
                     exit(0);
+#endif
                 } else
                     error("Wrong option %s.", longOptions[optionIdx].name);
                 break;
@@ -236,6 +238,7 @@ void parse_opts(int argc, char **argv) {
             case 'm':
                 command_line.send_output_by_mail = 1;
                 break;
+#ifndef CPU
             case 'G':
                 if (optarg)
                     command_line.gpus = atoi(optarg);
@@ -247,6 +250,7 @@ void parse_opts(int argc, char **argv) {
                 command_line.gpus = strtok_int(optarg, ",", command_line.gpu_nums);
                 command_line.wait_free_gpus = 0;
                 break;
+#endif
             case 't':
                 command_line.request = c_TAIL;
                 command_line.jobid = atoi(optarg);
@@ -389,13 +393,32 @@ void parse_opts(int argc, char **argv) {
                         command_line.request = c_SHOW_CMD;
                         command_line.jobid = -1;
                         break;
+#ifndef CPU
                     case 'g':
                         command_line.request = c_LIST_GPU;
                         break;
+#endif
                     default:
                         fprintf(stderr, "Option %c missing argument.\n",
                                 optopt);
                         exit(-1);
+                }
+                break;
+            case 'M':
+                if (command_line.request != c_LIST) {
+                    fprintf(stderr, "-M can only be used when listing jobs.\n");
+                    exit(-1);
+                }
+
+                if (strcmp(optarg, "default") == 0)
+                    command_line.list_format = DEFAULT;
+                else if (strcmp(optarg, "json") == 0)
+                    command_line.list_format = JSON;
+                else if (strcmp(optarg, "tab") == 0)
+                    command_line.list_format = TAB;
+                else {
+                    fprintf(stderr, "Invalid argument for option M: %s.\n", optarg);
+                    exit(-1);
                 }
                 break;
             case '?':
@@ -465,9 +488,11 @@ static void go_background() {
 
 static void print_help(const char *cmd) {
     puts(version);
-    printf("usage: %s [action] [-ngfmdE] [-L <lab>] [-D <id>] [cmd...]\n", cmd);
+    printf("usage: %s <action> <[options] {your-command}>\n", cmd);
     printf("Env vars:\n");
+#ifndef CPU
     printf("  TS_VISIBLE_DEVICES  the GPU IDs that are visible to ts. Jobs will be run on these GPUs only.\n");
+#endif
     printf("  TS_SOCKET  the path to the unix socket used by the ts command.\n");
     printf("  TS_MAILTO  where to mail the result (on -m). Local user by default.\n");
     printf("  TS_MAXFINISHED  maximum finished jobs in the queue.\n");
@@ -481,23 +506,26 @@ static void print_help(const char *cmd) {
     printf("  --getenv   [var]                get the value of the specified variable in server environment.\n");
     printf("  --setenv   [var]                set the specified flag to server environment.\n");
     printf("  --unsetenv   [var]              remove the specified flag from server environment.\n");
-    printf("  --set_gpu_free_perc   [num]     set the value of GPU memory threshold above which GPUs are considered available (90 by default).\n");
-    printf("  --get_gpu_free_perc             get the value of GPU memory threshold above which GPUs are considered available.\n");
-    printf("  --unsetenv   [var]              remove the specified flag from server environment.\n");
     printf("  --get_label      || -a [id]     show the job label. Of the last added, if not specified.\n");
     printf("  --full_cmd       || -F [id]     show full command. Of the last added, if not specified.\n");
     printf("  --count_running  || -R          return the number of running jobs\n");
     printf("  --last_queue_id  || -q          show the job ID of the last added.\n");
     printf("  --get_logdir                    get the path containing log files.\n");
     printf("  --set_logdir [path]             set the path containing log files.\n");
+#ifndef CPU
+    printf("  --set_gpu_free_perc   [num]     set the value of GPU memory threshold above which GPUs are considered available (90 by default).\n");
+    printf("  --get_gpu_free_perc             get the value of GPU memory threshold above which GPUs are considered available.\n");
     printf("Long option adding jobs:\n");
     printf("  --gpus           || -G [num]    number of GPUs required by the job (1 default).\n");
-    printf("  --gpu_indices    || -g <id,...> the job will be on these GPU indices without checking whether they are free.\n");
+    printf("  --gpu_indices    || -g [id,...] the job will be on these GPU indices without checking whether they are free.\n");
+#endif
     printf("Actions (can be performed only one at a time):\n");
     printf("  -K           kill the task spooler server\n");
     printf("  -C           clear the list of finished jobs\n");
     printf("  -l           show the job list (default action)\n");
+#ifndef CPU
     printf("  -g           list all jobs running on GPUs and the corresponding GPU IDs.\n");
+#endif
     printf("  -S [num]     get/set the number of max simultaneous jobs of the server.\n");
     printf("  -t [id]      \"tail -n 10 -f\" the output of the job. Last run if not specified.\n");
     printf("  -c [id]      like -t, but shows all the lines. Last run if not specified.\n");
@@ -510,20 +538,21 @@ static void print_help(const char *cmd) {
     printf("  -k [id]      send SIGTERM to the job process group. The last run, if not specified.\n");
     printf("  -T           send SIGTERM to all running job groups.\n");
     printf("  -u [id]      put that job first. The last added, if not specified.\n");
-    printf("  -U <id-id>   swap two jobs in the queue.\n");
+    printf("  -U [id-id]   swap two jobs in the queue.\n");
+    printf("  -M [format]  Print output in a machine-readable format. Choices: {default, json, tab}.\n");
     printf("  -h           show this help\n");
     printf("  -V           show the program version\n");
     printf("Options adding jobs:\n");
     printf("  -B           in case of full clients on the server, quit instead of waiting.\n");
     printf("  -n           don't store the output of the command.\n");
     printf("  -E           Keep stderr apart, in a name like the output file, but adding '.e'.\n");
-    printf("  -O           Set name of the log file (without any path).\n");
     printf("  -z           gzip the stored output (if not -n).\n");
     printf("  -f           don't fork into background.\n");
     printf("  -m           send the output by e-mail (uses sendmail).\n");
     printf("  -d           the job will be run after the last job ends.\n");
-    printf("  -D <id,...>  the job will be run after the job of given IDs ends.\n");
-    printf("  -W <id,...>  the job will be run after the job of given IDs ends well (exit code 0).\n");
+    printf("  -O [name]    set name of the log file (without any path).\n");
+    printf("  -D [id,...]  the job will be run after the job of given IDs ends.\n");
+    printf("  -W [id,...]  the job will be run after the job of given IDs ends well (exit code 0).\n");
     printf("  -L [label]   name this task with a label, to be distinguished on listing.\n");
     printf("  -N [num]     number of slots required by the job (1 default).\n");
 }

@@ -1,10 +1,12 @@
 # GPU Task Spooler
 
+![github-action](https://github.com/justanhduc/task-spooler/actions/workflows/build.yml/badge.svg)
+
 Originally, [Task Spooler by Lluís Batlle i Rossell](https://vicerveza.homeunix.net/~viric/soft/ts/).
 
 ## Introduction 
 
-A **CPU-only** version that is more faithful to the original Task Spooler is being actively developed in [here](https://github.com/justanhduc/task-spooler/tree/cpu-only).
+~~A **CPU-only** version that is more faithful to the original Task Spooler is being actively developed in [here](https://github.com/justanhduc/task-spooler/tree/cpu-only).~~
 
 As in freshmeat.net:
 

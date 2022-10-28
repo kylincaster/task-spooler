@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 
 #include "main.h"
+#include "cjson/cJSON.h"
 
 /* The list will access them */
 int busy_slots = 0;
@@ -356,37 +357,206 @@ const char *jstate2string(enum Jobstate s) {
     return jobstate;
 }
 
-void s_list(int s) {
+/* Serialize a job and add it to the JSON array. Returns 1 for success, 0 for failure. */
+static int add_job_to_json_array(struct Job *p, cJSON *jobs) {
+    cJSON *job = cJSON_CreateObject();
+    if (job == NULL)
+    {
+        error("Error initializing JSON object for job %i.", p->jobid);
+        return 0;
+    }
+    cJSON_AddItemToArray(jobs, job);
+
+    /* Add fields */
+    cJSON *field;
+
+    /* ID */
+    field = cJSON_CreateNumber(p->jobid);
+    if (field == NULL)
+    {
+        error("Error initializing JSON object for job %i field ID.", p->jobid);
+        return 0;
+    }
+    cJSON_AddItemToObject(job, "ID", field);
+
+    /* State */
+    const char *state_string = jstate2string(p->state);
+    field = cJSON_CreateStringReference(state_string);
+    if (field == NULL)
+    {
+        error("Error initializing JSON object for job %i field State (value %d/%s).", p->jobid, p->state, state_string);
+        return 0;
+    }
+    cJSON_AddItemToObject(job, "State", field);
+
+    /* Output */
+    field = cJSON_CreateStringReference(p->output_filename);
+    if (field == NULL)
+    {
+        error("Error initializing JSON object for job %i field Output (value %s).", p->jobid, p->output_filename);
+        return 0;
+    }
+    cJSON_AddItemToObject(job, "Output", field);
+
+    /* E-Level */
+    if (p->state == FINISHED) {
+        field = cJSON_CreateNumber(p->result.errorlevel);
+    }
+    else {
+        field = cJSON_CreateNull();
+    }
+    if (field == NULL)
+    {
+        error("Error initializing JSON object for job %i field E-Level.", p->jobid);
+        return 0;
+    }
+    cJSON_AddItemToObject(job, "E-Level", field);
+
+    /* Time */
+    if (p->state == FINISHED) {
+        field = cJSON_CreateNumber(p->result.real_ms);
+        if (field == NULL)
+        {
+            error("Error initializing JSON object for job %i field Time_ms (value %d).", p->result.real_ms);
+            return 0;
+        }
+    }
+    else {
+        field = cJSON_CreateNull();
+        if (field == NULL)
+        {
+            error("Error initializing JSON object for job %i field Time_ms (no result).");
+            return 0;
+        }
+    }
+    cJSON_AddItemToObject(job, "Time_ms", field);
+
+    /* GPUs */
+    #ifndef CPU
+    field = cJSON_CreateNumber(p->num_gpus);
+    if (field == NULL)
+    {
+        error("Error initializing JSON object for job %i field GPUs (value %d).", p->num_gpus);
+        return 0;
+    }
+    cJSON_AddItemToObject(job, "GPUs", field);
+    #endif /*CPU*/
+
+    /* Command */
+    field = cJSON_CreateStringReference(p->command);
+    if (field == NULL)
+    {
+        error("Error initializing JSON object for job %i field Command (value %s).", p->jobid, p->command);
+        return 0;
+    }
+    cJSON_AddItemToObject(job, "Command", field);
+
+    return 1;
+}
+
+void s_list(int s, enum ListFormat listFormat) {
     struct Job *p;
     char *buffer;
 
-    /* Times:   0.00/0.00/0.00 - 4+4+4+2 = 14*/
-    buffer = joblist_headers();
-    send_list_line(s, buffer);
-    free(buffer);
+    if (listFormat == DEFAULT) {
+        /* Times:   0.00/0.00/0.00 - 4+4+4+2 = 14*/
+        buffer = joblist_headers();
+        send_list_line(s, buffer);
+        free(buffer);
 
-    /* Show Queued or Running jobs */
-    p = firstjob;
-    while (p != 0) {
-        if (p->state != HOLDING_CLIENT) {
+        /* Show Queued or Running jobs */
+        p = firstjob;
+        while (p != 0) {
+            if (p->state != HOLDING_CLIENT) {
+                buffer = joblist_line(p);
+                send_list_line(s, buffer);
+                free(buffer);
+            }
+            p = p->next;
+        }
+
+        p = first_finished_job;
+
+        /* Show Finished jobs */
+        while (p != 0) {
             buffer = joblist_line(p);
             send_list_line(s, buffer);
             free(buffer);
+            p = p->next;
         }
-        p = p->next;
     }
+    else if (listFormat == JSON) {
+        cJSON *jobs = cJSON_CreateArray();
+        if (jobs == NULL)
+        {
+            error("Error initializing JSON array.");
+            goto end;
+        }
 
-    p = first_finished_job;
+        /* Serialize Queued or Running jobs */
+        p = firstjob;
+        while (p != 0) {
+            if (p->state != HOLDING_CLIENT) {
+                int success = add_job_to_json_array(p, jobs);
+                if (success == 0) {
+                    goto end;
+                }
+            }
+            p = p->next;
+        }
 
-    /* Show Finished jobs */
-    while (p != 0) {
-        buffer = joblist_line(p);
+        /* Serialize Finished jobs */
+        p = first_finished_job;
+        while (p != 0) {
+            int success = add_job_to_json_array(p, jobs);
+            if (success == 0) {
+                goto end;
+            }
+            p = p->next;
+        }
+
+        buffer = cJSON_PrintUnformatted(jobs);
+        if (buffer == NULL)
+        {
+            error("Error converting jobs to JSON.");
+            goto end;
+        }
+        
+        // append newline
+        size_t buffer_strlen = strlen(buffer);
+        buffer = realloc(buffer, buffer_strlen+1+1);
+        buffer[buffer_strlen] = '\n';
+
         send_list_line(s, buffer);
+    end:
+        cJSON_Delete(jobs);
         free(buffer);
-        p = p->next;
+    }
+    else if (listFormat == TAB) {
+        /* Show Queued or Running jobs */
+        p = firstjob;
+        while (p != 0) {
+            if (p->state != HOLDING_CLIENT) {
+                buffer = joblist_line_plain(p);
+                send_list_line(s, buffer);
+                free(buffer);
+            }
+            p = p->next;
+        }
+
+        p = first_finished_job;
+
+        /* Show Finished jobs */
+        while (p != 0) {
+            buffer = joblist_line_plain(p);
+            send_list_line(s, buffer);
+            free(buffer);
+            p = p->next;
+        }
     }
 }
 
+#ifndef CPU
 void s_list_gpu(int s) {
     struct Job *p = firstjob;
     char* buffer;
@@ -402,6 +572,7 @@ void s_list_gpu(int s) {
         p = p->next;
     }
 }
+#endif
 
 static void init_job(struct Job *p) {
     p->next = 0;
@@ -671,14 +842,17 @@ int next_run_job() {
     if (firstjob == 0)
         return -1;
 
+#ifndef CPU
     /* Query GPUs */
     int numFree;
     int *freeGpuList = getGpuList(&numFree);
+#endif
 
     /* Look for a runnable task */
     p = firstjob;
     while (p != 0) {
         if (p->state == QUEUED || p->state == ALLOCATING) {
+#ifndef CPU
             if (p->num_gpus && p->wait_free_gpus) {
                 if (numFree < p->num_gpus) {
                     /* if fewer GPUs than required then next */
@@ -707,6 +881,7 @@ int next_run_job() {
                 memcpy(p->gpu_ids, gpu_ids, p->num_gpus * sizeof(int));
                 free(gpu_ids);
             }
+#endif
 
             if (p->depend_on_size) {
                 int ready = 1;
@@ -729,16 +904,20 @@ int next_run_job() {
 
             if (free_slots >= p->num_slots) {
                 busy_slots = busy_slots + p->num_slots;
+#ifndef CPU
                 if (p->num_gpus)
                     broadcastUsedGpus(p->num_gpus, p->gpu_ids);
 
                 free(freeGpuList);
+#endif
                 return p->jobid;
             }
         }
         p = p->next;
     }
+#ifndef CPU
     free(freeGpuList);
+#endif
     return -1;
 }
 
@@ -827,8 +1006,10 @@ void job_finished(const struct Result *result, int jobid) {
     if (p == 0)
         error("on jobid %i finished, it doesn't exist", jobid);
 
+#ifndef CPU
     /* Recycle GPUs */
     broadcastFreeGpus(p->num_gpus, p->gpu_ids);
+#endif
 
     /* The job may be not only in running state, but also in other states, as
      * we call this to clean up the jobs list in case of the client closing the
@@ -990,9 +1171,11 @@ void s_job_info(int s, int jobid) {
     write(s, p->command, strlen(p->command));
     fd_nprintf(s, 100, "\n");
     fd_nprintf(s, 100, "Slots required: %i\n", p->num_slots);
+#ifndef CPU
     fd_nprintf(s, 100, "GPUs required: %d\n", p->num_gpus);
     fd_nprintf(s, 100, "GPU IDs: %s\n", ints_to_chars(
             p->gpu_ids, p->num_gpus ? p->num_gpus : 1, ","));
+#endif
     fd_nprintf(s, 100, "Enqueue time: %s",
                ctime(&p->info.enqueue_time.tv_sec));
     if (p->state == RUNNING) {
@@ -1650,6 +1833,7 @@ void s_unset_env(int s, int size) {
     free(var);
 }
 
+#ifndef CPU
 void s_set_free_percentage(int new_percentage) {
     if (new_percentage > 0)
         setFreePercentage(new_percentage);
@@ -1663,6 +1847,7 @@ void s_get_free_percentage(int s) {
     m.u.size = getFreePercentage();
     send_msg(s, &m);
 }
+#endif
 
 void s_get_logdir(int s) {
     send_list_line(s, logdir);

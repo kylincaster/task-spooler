@@ -136,13 +136,14 @@ static void run_gzip(int fd_out, int fd_in) {
     }
 }
 
-static void run_child(int fd_send_filename, const char* tmpdir) {
+static void run_child(int fd_send_filename, char* tmpdir) {
     char *outfname;
     char errfname[sizeof outfname + 2]; /* .e */
     int namesize;
     int outfd;
     int err;
     struct timeval starttv;
+    char *cmd = build_command_string();
 
     if (command_line.logfile) {
         outfname = malloc(1 + strlen(command_line.logfile) + strlen(".XXXXXX") + 1);
@@ -154,26 +155,25 @@ static void run_child(int fd_send_filename, const char* tmpdir) {
         /* Prepare path */
         int lname;
         char *outfname_full;
+        char *outdir = tmpdir == NULL ? "/tmp" : tmpdir;
 
-        if (tmpdir == NULL)
-            tmpdir = "/tmp";
-        lname = strlen(tmpdir) + strlen(outfname) + 1 /* \0 */;
-
+        lname = strlen(outdir) + strlen(outfname) + 1 /* \0 */;
         outfname_full = (char *) malloc(lname);
-        strcpy(outfname_full, tmpdir);
+        strcpy(outfname_full, outdir);
         strcat(outfname_full, outfname);
 
+        /* Prepare the filename */
+        outfd = mkstemp(outfname_full); /* stdout */
+        assert(outfd != -1);
+        write(outfd, cmd, strlen(cmd));
+        write(outfd, "\n", 2);
+        free(cmd);
+        free(tmpdir);
         if (command_line.gzip) {
             int p[2];
             /* We assume that all handles are closed*/
             err = pipe(p);
             assert(err == 0);
-
-            /* gzip output goes to the filename */
-            /* This will be the handle other than 0,1,2 */
-            /* mkstemp doesn't admit adding ".gz" to the pattern */
-            outfd = mkstemp(outfname_full); /* stdout */
-            assert(outfd != -1);
 
             /* Program stdout and stderr */
             /* which go to pipe write handle */
@@ -201,8 +201,6 @@ static void run_child(int fd_send_filename, const char* tmpdir) {
              * from it */
             run_gzip(outfd, p[0]);
         } else {
-            /* Prepare the filename */
-            outfd = mkstemp(outfname_full); /* stdout */
             dup2(outfd, 1); /* stdout */
             if (command_line.stderr_apart) {
                 int errfd;
@@ -242,7 +240,7 @@ int run_job(struct Result *res) {
     int pid;
     int errorlevel;
     int p[2];
-    const char *tmpdir = get_logdir();
+    char *tmpdir = get_logdir();
 
     /* For the parent */
     /*program_signal(); Still not needed*/
@@ -263,7 +261,7 @@ int run_job(struct Result *res) {
             /* Not reachable, if the 'exec' of the command
              * works. Thus, command exists, etc. */
             fprintf(stderr, "ts could not run the command\n");
-            free((char*) tmpdir);
+            free(tmpdir);
             exit(-1);
             /* To avoid a compiler warning */
             errorlevel = 0;
